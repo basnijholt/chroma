@@ -11,6 +11,7 @@ import pytest
 from chromadb.api.client import Client as ClientCreator
 from chromadb.base_types import SparseVector
 from chromadb.config import System
+from chromadb.test.conftest import skip_if_multi_region
 from chromadb.test.utils.wait_for_version_increase import (
     get_collection_version,
     wait_for_version_increase,
@@ -23,6 +24,7 @@ from chromadb.utils.statistics import (
 )
 
 
+@skip_if_multi_region()
 def test_statistics_wrapper(basic_http_client: System) -> None:
     """Test the statistics wrapper methods on Collection"""
     client = ClientCreator.from_system(basic_http_client)
@@ -35,7 +37,9 @@ def test_statistics_wrapper(basic_http_client: System) -> None:
     )
 
     # Enable statistics
-    attached_fn, created = attach_statistics_function(collection, "test_collection_statistics")
+    attached_fn, created = attach_statistics_function(
+        collection, "test_collection_statistics"
+    )
     assert attached_fn is not None
     assert created is True
     assert attached_fn.function_name == "statistics"
@@ -129,7 +133,9 @@ def test_backfill_statistics(basic_http_client: System) -> None:
     initial_version = get_collection_version(client, collection.name)
 
     # Enable statistics
-    attached_fn, created = attach_statistics_function(collection, "my_collection_statistics")
+    attached_fn, created = attach_statistics_function(
+        collection, "my_collection_statistics"
+    )
     assert created is True
     assert attached_fn.function_name == "statistics"
     assert attached_fn.output_collection == "my_collection_statistics"
@@ -370,7 +376,9 @@ def test_sparse_vector_statistics(basic_http_client: System) -> None:
             {"category": "A", "vec": sparse_vec3},
         ],
     )
-    _, created = attach_statistics_function(collection, "sparse_vector_test1_statistics")
+    _, created = attach_statistics_function(
+        collection, "sparse_vector_test1_statistics"
+    )
     assert created is True
 
     initial_version = get_collection_version(client, collection.name)
@@ -447,7 +455,9 @@ def test_statistics_high_cardinality(basic_http_client: System) -> None:
     initial_version = get_collection_version(client, collection.name)
 
     # Enable statistics
-    _, created = attach_statistics_function(collection, "high_cardinality_test_statistics")
+    _, created = attach_statistics_function(
+        collection, "high_cardinality_test_statistics"
+    )
     assert created is True
 
     # Wait for statistics to be computed

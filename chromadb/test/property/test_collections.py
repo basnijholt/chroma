@@ -19,6 +19,7 @@ import chromadb.test.property.invariants as invariants
 from typing import Any, Dict, Mapping, Optional
 import numpy
 from chromadb.test.property.strategies import hashing_embedding_function
+from chromadb.test.conftest import skip_if_multi_region
 
 
 class CollectionStateMachine(RuleBasedStateMachine):
@@ -241,6 +242,7 @@ class CollectionStateMachine(RuleBasedStateMachine):
         return self._model
 
 
+@skip_if_multi_region()
 def test_collections(caplog: pytest.LogCaptureFixture, client: ClientAPI) -> None:
     caplog.set_level(logging.ERROR)
     run_state_machine_as_test(lambda: CollectionStateMachine(client))  # type: ignore

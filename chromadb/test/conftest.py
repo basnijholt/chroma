@@ -27,7 +27,7 @@ from chromadb.api.async_fastapi import AsyncFastAPI
 from chromadb.api.fastapi import FastAPI
 import chromadb.server.fastapi
 from chromadb.api import ClientAPI, ServerAPI, BaseAPI
-from chromadb.config import Settings, System
+from chromadb.config import DEFAULT_DATABASE, Settings, System
 from chromadb.db.mixins import embeddings_queue
 from chromadb.ingest import Producer
 from chromadb.types import SeqId, OperationRecord
@@ -144,6 +144,9 @@ def override_hypothesis_profile(
 
 
 NOT_CLUSTER_ONLY = os.getenv("CHROMA_CLUSTER_TEST_ONLY") != "1"
+MULTI_REGION_ENABLED = os.getenv("MULTI_REGION") == "true"
+MULTI_REGION_TOPOLOGY = "tilt-spanning"
+DEFAULT_MCMR_DATABASE = f"{MULTI_REGION_TOPOLOGY}+{DEFAULT_DATABASE}"
 COMPACTION_SLEEP = 120
 
 
@@ -151,6 +154,13 @@ def skip_if_not_cluster() -> pytest.MarkDecorator:
     return pytest.mark.skipif(
         NOT_CLUSTER_ONLY,
         reason="Requires Kubernetes to be running with a valid config",
+    )
+
+
+def skip_if_multi_region() -> pytest.MarkDecorator:
+    return pytest.mark.skipif(
+        MULTI_REGION_ENABLED,
+        reason="Test skipped when MULTI_REGION=true",
     )
 
 
@@ -685,7 +695,7 @@ def rust_sqlite_persistent() -> Generator[System, None, None]:
     else ["python_sqlite_ephemeral"]
 )
 def sqlite(request: pytest.FixtureRequest) -> Generator[System, None, None]:
-    return request.getfixturevalue(request.param)
+    return request.getfixturevalue(request.param)  # type: ignore
 
 
 @pytest.fixture(
@@ -694,7 +704,7 @@ def sqlite(request: pytest.FixtureRequest) -> Generator[System, None, None]:
     else ["python_sqlite_persistent"]
 )
 def sqlite_persistent(request: pytest.FixtureRequest) -> Generator[System, None, None]:
-    return request.getfixturevalue(request.param)
+    return request.getfixturevalue(request.param)  # type: ignore
 
 
 def filtered_fixture_names() -> List[str]:
@@ -783,12 +793,12 @@ def system_authn_rbac_authz(
 def system_http_server(
     request: pytest.FixtureRequest,
 ) -> Generator[ServerAPI, None, None]:
-    return request.getfixturevalue(request.param)
+    return request.getfixturevalue(request.param)  # type: ignore
 
 
 @pytest.fixture(scope="function", params=filtered_fixture_names())
 def system(request: pytest.FixtureRequest) -> Generator[ServerAPI, None, None]:
-    return request.getfixturevalue(request.param)
+    return request.getfixturevalue(request.param)  # type: ignore
 
 
 @pytest.fixture(scope="module", params=system_fixtures_ssl())
@@ -839,6 +849,9 @@ class ClientFactories:
         if kwargs.get("settings") is None:
             kwargs["settings"] = self._system.settings
 
+        if kwargs.get("database") is None and MULTI_REGION_ENABLED:
+            kwargs["database"] = DEFAULT_MCMR_DATABASE
+
         if (
             self._system.settings.chroma_api_impl
             == "chromadb.api.async_fastapi.AsyncFastAPI"
@@ -872,11 +885,11 @@ class ClientFactories:
             == "chromadb.api.async_fastapi.AsyncFastAPI"
         ):
             client = cast(AdminClient, AsyncAdminClientSync(*args, **kwargs))
-            self._created_clients.append(client)
+            self._created_clients.append(client)  # type: ignore
             return client
 
         client = AdminClient(*args, **kwargs)
-        self._created_clients.append(client)
+        self._created_clients.append(client)  # type: ignore
         return client
 
     def create_admin_client_from_system(self) -> AdminClient:
@@ -885,11 +898,11 @@ class ClientFactories:
             == "chromadb.api.async_fastapi.AsyncFastAPI"
         ):
             client = cast(AdminClient, AsyncAdminClientSync.from_system(self._system))
-            self._created_clients.append(client)
+            self._created_clients.append(client)  # type: ignore
             return client
 
         client = AdminClient.from_system(self._system)
-        self._created_clients.append(client)
+        self._created_clients.append(client)  # type: ignore
         return client
 
 
@@ -906,45 +919,63 @@ def client_factories(system: System) -> Generator[ClientFactories, None, None]:
         del client
 
 
-def create_isolated_database(client: ClientAPI) -> None:
-    """Create an isolated database for a test and updates the client to use it."""
+def get_topology_name(databse_name: str) -> Optional[str]:
+    return databse_name.split("+")[0] if len(databse_name.split("+")) > 1 else None
+
+
+def create_database(client: ClientAPI, database_name: str) -> None:
     admin_settings = client.get_settings()
     if admin_settings.chroma_api_impl == "chromadb.api.async_fastapi.AsyncFastAPI":
         admin_settings.chroma_api_impl = "chromadb.api.fastapi.FastAPI"
-
     admin = AdminClient(admin_settings)
+    admin.create_database(database_name)
+
+
+def create_isolated_database(client: ClientAPI) -> None:
+    """Create an isolated database for a test and updates the client to use it."""
     database = "test_" + str(uuid.uuid4())
-    admin.create_database(database)
+    topo_name = get_topology_name(client.database)
+    if topo_name is not None:
+        database = topo_name + "+" + database
+    create_database(client, database)
     client.set_database(database)
 
 
 @pytest.fixture(scope="function")
 def client(system: System) -> Generator[ClientAPI, None, None]:
     system.reset_state()
+    database = DEFAULT_MCMR_DATABASE if MULTI_REGION_ENABLED else DEFAULT_DATABASE
 
     if system.settings.chroma_api_impl == "chromadb.api.async_fastapi.AsyncFastAPI":
-        client = cast(Any, AsyncClientCreatorSync.from_system_async(system))
-        yield client
-        client.clear_system_cache()
+        client = cast(
+            Any, AsyncClientCreatorSync.from_system_async(system, database=database)
+        )
     else:
-        client = ClientCreator.from_system(system)
-        yield client
-        client.clear_system_cache()
+        client = ClientCreator.from_system(system, database=database)
+
+    yield client
+    client.clear_system_cache()
 
 
 @pytest.fixture(scope="function")
 def http_client(system_http_server: System) -> Generator[ClientAPI, None, None]:
     system_http_server.reset_state()
+    database = DEFAULT_MCMR_DATABASE if MULTI_REGION_ENABLED else DEFAULT_DATABASE
 
     if (
         system_http_server.settings.chroma_api_impl
         == "chromadb.api.async_fastapi.AsyncFastAPI"
     ):
-        client = cast(Any, AsyncClientCreatorSync.from_system_async(system_http_server))
+        client = cast(
+            Any,
+            AsyncClientCreatorSync.from_system_async(
+                system_http_server, database=database
+            ),
+        )
         yield client
         client.clear_system_cache()
     else:
-        client = ClientCreator.from_system(system_http_server)
+        client = ClientCreator.from_system(system_http_server, database=database)
         yield client
         client.clear_system_cache()
 
@@ -952,7 +983,8 @@ def http_client(system_http_server: System) -> Generator[ClientAPI, None, None]:
 @pytest.fixture(scope="function")
 def client_ssl(system_ssl: System) -> Generator[ClientAPI, None, None]:
     system_ssl.reset_state()
-    client = ClientCreator.from_system(system_ssl)
+    database = DEFAULT_MCMR_DATABASE if MULTI_REGION_ENABLED else DEFAULT_DATABASE
+    client = ClientCreator.from_system(system_ssl, database=database)
     yield client
     client.clear_system_cache()
 

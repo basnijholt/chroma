@@ -2,8 +2,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from chromadb.config import DEFAULT_TENANT
 from chromadb.test.conftest import ClientFactories
+from chromadb.test.conftest import skip_if_multi_region
 
 
+@skip_if_multi_region()
 def test_multiple_clients_concurrently(client_factories: ClientFactories) -> None:
     """Tests running multiple clients, each against their own database, concurrently."""
     client = client_factories.create_client()

@@ -7,8 +7,11 @@ import logging
 import pytest
 
 from chromadb.api.models.Collection import Collection
-from chromadb.test.conftest import reset, skip_if_not_cluster
-from chromadb.test.utils.wait_for_version_increase import wait_for_version_increase
+from chromadb.test.conftest import (
+    reset,
+    skip_if_multi_region,
+    skip_if_not_cluster,
+)
 from hypothesis.stateful import (
     Bundle,
     RuleBasedStateMachine,
@@ -187,6 +190,7 @@ class ForkStateMachine(RuleBasedStateMachine):
 
 
 @skip_if_not_cluster()
+@skip_if_multi_region()
 def test_fork(caplog: pytest.LogCaptureFixture, client: chromadb.api.ClientAPI) -> None:
     caplog.set_level(logging.ERROR)
     run_state_machine_as_test(lambda: ForkStateMachine(client))  # type: ignore

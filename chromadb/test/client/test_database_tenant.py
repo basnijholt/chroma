@@ -1,12 +1,13 @@
 import pytest
 from chromadb.config import DEFAULT_DATABASE, DEFAULT_TENANT
-from chromadb.test.conftest import ClientFactories
+from chromadb.test.conftest import ClientFactories, skip_if_multi_region
 from chromadb.errors import InvalidArgumentError
 from chromadb.api.types import GetResult
 from typing import Dict, Any
 import numpy as np
 
 
+@skip_if_multi_region()
 def test_database_tenant_collections(client_factories: ClientFactories) -> None:
     client = client_factories.create_client_from_system()
     client.reset()
@@ -104,12 +105,12 @@ def test_database_collections_add(client_factories: ClientFactories) -> None:
     coll_default.add(**records_default)  # type: ignore
 
     # Make sure the collections are isolated
-    res = coll_new.get(include=["embeddings", "documents"])  # type: ignore
+    res = coll_new.get(include=["embeddings", "documents"])
     assert res["ids"] == records_new["ids"]
     check_embeddings(res=res, records=records_new)
     assert res["documents"] == records_new["documents"]
 
-    res = coll_default.get(include=["embeddings", "documents"])  # type: ignore
+    res = coll_default.get(include=["embeddings", "documents"])
     assert res["ids"] == records_default["ids"]
     check_embeddings(res=res, records=records_default)
     assert res["documents"] == records_default["documents"]
@@ -151,12 +152,12 @@ def test_tenant_collections_add(client_factories: ClientFactories) -> None:
     coll_tenant2.add(**records_tenant2)  # type: ignore
 
     # Make sure the collections are isolated
-    res = coll_tenant1.get(include=["embeddings", "documents"])  # type: ignore
+    res = coll_tenant1.get(include=["embeddings", "documents"])
     assert res["ids"] == records_tenant1["ids"]
     check_embeddings(res=res, records=records_tenant1)
     assert res["documents"] == records_tenant1["documents"]
 
-    res = coll_tenant2.get(include=["embeddings", "documents"])  # type: ignore
+    res = coll_tenant2.get(include=["embeddings", "documents"])
     assert res["ids"] == records_tenant2["ids"]
     check_embeddings(res=res, records=records_tenant2)
     assert res["documents"] == records_tenant2["documents"]

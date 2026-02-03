@@ -14,6 +14,7 @@ from chromadb.api.functions import (
 )
 from chromadb.config import System
 from chromadb.errors import ChromaError, NotFoundError
+from chromadb.test.conftest import skip_if_multi_region
 from chromadb.test.utils.wait_for_version_increase import (
     get_collection_version,
     wait_for_version_increase,
@@ -21,6 +22,7 @@ from chromadb.test.utils.wait_for_version_increase import (
 from time import sleep
 
 
+@skip_if_multi_region()
 def test_count_function_attach_and_detach(basic_http_client: System) -> None:
     """Test creating and removing a function with the record_counter operator"""
     client = ClientCreator.from_system(basic_http_client)
@@ -72,6 +74,7 @@ def test_count_function_attach_and_detach(basic_http_client: System) -> None:
     assert success is True
 
 
+@skip_if_multi_region()
 def test_task_with_invalid_function(basic_http_client: System) -> None:
     """Test that creating a task with an invalid function raises an error"""
     client = ClientCreator.from_system(basic_http_client)
@@ -90,6 +93,7 @@ def test_task_with_invalid_function(basic_http_client: System) -> None:
         )
 
 
+@skip_if_multi_region()
 def test_attach_function_returns_function_name(basic_http_client: System) -> None:
     """Test that attach_function and get_attached_function return function_name field instead of UUID"""
     client = ClientCreator.from_system(basic_http_client)
@@ -119,6 +123,7 @@ def test_attach_function_returns_function_name(basic_http_client: System) -> Non
     collection.detach_function(attached_fn.name, delete_output_collection=True)
 
 
+@skip_if_multi_region()
 def test_function_multiple_collections(basic_http_client: System) -> None:
     """Test attaching functions on multiple collections"""
     client = ClientCreator.from_system(basic_http_client)
@@ -166,6 +171,7 @@ def test_function_multiple_collections(basic_http_client: System) -> None:
     )
 
 
+@skip_if_multi_region()
 def test_functions_one_attached_function_per_collection(
     basic_http_client: System,
 ) -> None:
@@ -238,6 +244,7 @@ def test_functions_one_attached_function_per_collection(
     )
 
 
+@skip_if_multi_region()
 def test_attach_function_with_invalid_params(basic_http_client: System) -> None:
     """Test that attach_function with non-empty params raises an error"""
     client = ClientCreator.from_system(basic_http_client)
@@ -260,6 +267,7 @@ def test_attach_function_with_invalid_params(basic_http_client: System) -> None:
         )
 
 
+@skip_if_multi_region()
 def test_attach_function_output_collection_already_exists(
     basic_http_client: System,
 ) -> None:
@@ -287,6 +295,7 @@ def test_attach_function_output_collection_already_exists(
         )
 
 
+@skip_if_multi_region()
 def test_function_remove_nonexistent(basic_http_client: System) -> None:
     """Test removing a task that doesn't exist raises NotFoundError"""
     client = ClientCreator.from_system(basic_http_client)
@@ -308,6 +317,7 @@ def test_function_remove_nonexistent(basic_http_client: System) -> None:
         collection.detach_function(attached_fn.name, delete_output_collection=True)
 
 
+@skip_if_multi_region()
 def test_attach_to_output_collection_fails(basic_http_client: System) -> None:
     """Test that attaching a function to an output collection fails"""
     client = ClientCreator.from_system(basic_http_client)
@@ -336,6 +346,7 @@ def test_attach_to_output_collection_fails(basic_http_client: System) -> None:
         )
 
 
+@skip_if_multi_region()
 def test_delete_output_collection_detaches_function(basic_http_client: System) -> None:
     """Test that deleting an output collection also detaches the attached function"""
     client = ClientCreator.from_system(basic_http_client)
@@ -362,6 +373,7 @@ def test_delete_output_collection_detaches_function(basic_http_client: System) -
         input_collection.get_attached_function("my_function")
 
 
+@skip_if_multi_region()
 def test_delete_orphaned_output_collection(basic_http_client: System) -> None:
     """Test that deleting an output collection from a recently detached function works"""
     client = ClientCreator.from_system(basic_http_client)
@@ -393,6 +405,8 @@ def test_delete_orphaned_output_collection(basic_http_client: System) -> None:
         # Try to use the function - it should fail since it's detached
         client.get_collection("output_collection")
 
+
+@skip_if_multi_region()
 def test_partial_attach_function_repair(
     basic_http_client: System,
 ) -> None:
@@ -450,6 +464,7 @@ def test_partial_attach_function_repair(
     assert created is True
 
 
+@skip_if_multi_region()
 def test_output_collection_created_with_schema(basic_http_client: System) -> None:
     """Test that output collections are created with the source_attached_function_id in the schema"""
     client = ClientCreator.from_system(basic_http_client)
@@ -481,6 +496,7 @@ def test_output_collection_created_with_schema(basic_http_client: System) -> Non
     input_collection.detach_function(attached_fn.name, delete_output_collection=True)
 
 
+@skip_if_multi_region()
 def test_count_function_attach_and_detach_attach_attach(
     basic_http_client: System,
 ) -> None:
@@ -552,6 +568,8 @@ def test_count_function_attach_and_detach_attach_attach(
     assert created is False
     assert attached_fn is not None
 
+
+@skip_if_multi_region()
 def test_attach_function_idempotency(basic_http_client: System) -> None:
     """Test that attach_function is idempotent - calling it twice with same params returns created=False"""
     client = ClientCreator.from_system(basic_http_client)
