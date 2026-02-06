@@ -31,21 +31,26 @@ export type ReadLevel = (typeof ReadLevel)[keyof typeof ReadLevel];
 export type { SparseVector };
 
 /**
+ * Scalar metadata values that can be stored in arrays.
+ */
+export type MetadataScalar = boolean | number | string;
+
+/**
  * Metadata that can be associated with a collection.
- * Values must be boolean, number, or string types.
+ * Values can be scalars, sparse vectors, arrays of homogeneous scalars, or null.
  */
 export type CollectionMetadata = Record<
   string,
-  boolean | number | string | SparseVector | null
+  MetadataScalar | SparseVector | MetadataScalar[] | null
 >;
 
 /**
  * Metadata that can be associated with individual records.
- * Values must be boolean, number, or string types.
+ * Values can be scalars, sparse vectors, arrays of homogeneous scalars, or null.
  */
 export type Metadata = Record<
   string,
-  boolean | number | string | SparseVector | null
+  MetadataScalar | SparseVector | MetadataScalar[] | null
 >;
 
 /**
@@ -106,6 +111,8 @@ type WhereOperator = "$gt" | "$gte" | "$lt" | "$lte" | "$ne" | "$eq";
 
 type InclusionExclusionOperator = "$in" | "$nin";
 
+type ArrayContainsOperator = "$contains" | "$not_contains";
+
 type OperatorExpression =
   | { $gt: LiteralValue }
   | { $gte: LiteralValue }
@@ -116,7 +123,9 @@ type OperatorExpression =
   | { $and: LiteralValue }
   | { $or: LiteralValue }
   | { $in: LiteralValue[] }
-  | { $nin: LiteralValue[] };
+  | { $nin: LiteralValue[] }
+  | { $contains: LiteralValue }
+  | { $not_contains: LiteralValue };
 
 /**
  * Where clause for filtering records based on metadata.
