@@ -86,6 +86,60 @@ pub mod stats {
         }
     }
 
+    /// Statistics for cluster size distribution.
+    #[derive(Clone, Default)]
+    pub struct ClusterSizeStats {
+        pub num_centroids: u64,
+        pub min: u64,
+        pub max: u64,
+        pub median: u64,
+        pub p90: u64,
+        pub p99: u64,
+        pub avg: f64,
+        pub std: f64,
+    }
+
+    impl ClusterSizeStats {
+        /// Compute cluster size statistics from a slice of sizes.
+        pub fn from_sizes(sizes: &[usize]) -> Self {
+            if sizes.is_empty() {
+                return Self::default();
+            }
+
+            let mut sorted: Vec<usize> = sizes.to_vec();
+            sorted.sort_unstable();
+
+            let n = sorted.len();
+            let sum: usize = sorted.iter().sum();
+            let avg = sum as f64 / n as f64;
+
+            // Variance and std
+            let variance = sorted
+                .iter()
+                .map(|&x| (x as f64 - avg).powi(2))
+                .sum::<f64>()
+                / n as f64;
+            let std = variance.sqrt();
+
+            // Percentile helper
+            let percentile = |p: f64| -> u64 {
+                let idx = ((n as f64 - 1.0) * p).round() as usize;
+                sorted[idx.min(n - 1)] as u64
+            };
+
+            Self {
+                num_centroids: n as u64,
+                min: sorted[0] as u64,
+                max: sorted[n - 1] as u64,
+                median: percentile(0.5),
+                p90: percentile(0.9),
+                p99: percentile(0.99),
+                avg,
+                std,
+            }
+        }
+    }
+
     /// Snapshot of all method stats (non-atomic, owned).
     #[derive(Clone, Default)]
     pub struct StatsSnapshot {
@@ -110,11 +164,8 @@ pub mod stats {
         pub load: MethodSnapshot,
         pub load_raw: MethodSnapshot,
 
-        // Lifecycle
-        pub remove: MethodSnapshot,
-        pub search: MethodSnapshot,
-        pub commit: MethodSnapshot,
-        pub rebuild_on_drift: MethodSnapshot,
+        // Cluster statistics
+        pub cluster_stats: ClusterSizeStats,
     }
 
     impl StatsSnapshot {
@@ -136,10 +187,6 @@ pub mod stats {
                 "drop" => self.drop,
                 "load" => self.load,
                 "load_raw" => self.load_raw,
-                "remove" => self.remove,
-                "search" => self.search,
-                "commit" => self.commit,
-                "rebuild_on_drift" => self.rebuild_on_drift,
                 _ => MethodSnapshot::default(),
             }
         }
@@ -168,17 +215,11 @@ pub mod stats {
         // I/O
         pub load: MethodStats,
         pub load_raw: MethodStats,
-
-        // Lifecycle
-        pub remove: MethodStats,
-        pub search: MethodStats,
-        pub commit: MethodStats,
-        pub rebuild_on_drift: MethodStats,
     }
 
     impl QuantizedSpannStats {
-        /// Take a snapshot of current stats.
-        pub fn snapshot(&self) -> StatsSnapshot {
+        /// Take a snapshot of current stats with cluster size information.
+        pub fn snapshot(&self, cluster_sizes: &[usize]) -> StatsSnapshot {
             let snap = |m: &MethodStats| {
                 let (calls, total_nanos) = m.get();
                 MethodSnapshot { calls, total_nanos }
@@ -199,10 +240,7 @@ pub mod stats {
                 drop: snap(&self.drop),
                 load: snap(&self.load),
                 load_raw: snap(&self.load_raw),
-                remove: snap(&self.remove),
-                search: snap(&self.search),
-                commit: snap(&self.commit),
-                rebuild_on_drift: snap(&self.rebuild_on_drift),
+                cluster_stats: ClusterSizeStats::from_sizes(cluster_sizes),
             }
         }
     }
@@ -223,7 +261,6 @@ pub mod stats {
         "balance", "scrub", "split", "merge", "detach", "reassign", "drop",
     ];
     const IO_PATH: &[&str] = &["load", "load_raw"];
-    const LIFECYCLE: &[&str] = &["remove", "search", "commit", "rebuild_on_drift"];
 
     fn format_duration(nanos: u64) -> String {
         if nanos < 1_000 {
@@ -359,15 +396,56 @@ pub mod stats {
         out
     }
 
+    fn format_cluster_stats_table(snapshots: &[StatsSnapshot]) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+
+        // Header
+        writeln!(out, "\n=== Cluster Statistics (per 100K) ===").unwrap();
+        writeln!(
+            out,
+            "| CP | Centroids |   Min |   Max | Median |   P90 |   P99 |    Avg |    Std |"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "|----|-----------|-------|-------|--------|-------|-------|--------|--------|"
+        )
+        .unwrap();
+
+        // Data rows
+        for (i, snap) in snapshots.iter().enumerate() {
+            let cs = &snap.cluster_stats;
+            writeln!(
+                out,
+                "| {:>2} | {:>9} | {:>5} | {:>5} | {:>6} | {:>5} | {:>5} | {:>6.1} | {:>6.1} |",
+                i + 1,
+                format_count(cs.num_centroids),
+                cs.min,
+                cs.max,
+                cs.median,
+                cs.p90,
+                cs.p99,
+                cs.avg,
+                cs.std
+            )
+            .unwrap();
+        }
+
+        out
+    }
+
     /// Format all batch stats as summary tables.
     pub fn format_batch_tables(snapshots: &[StatsSnapshot]) -> String {
         let mut out = String::new();
+
+        // Cluster Statistics (first, most important overview)
+        out.push_str(&format_cluster_stats_table(snapshots));
 
         // Task Counts
         out.push_str(&format_count_table(snapshots, "Write Path", WRITE_PATH));
         out.push_str(&format_count_table(snapshots, "Balance Path", BALANCE_PATH));
         out.push_str(&format_count_table(snapshots, "I/O", IO_PATH));
-        out.push_str(&format_count_table(snapshots, "Lifecycle", LIFECYCLE));
 
         // Task Avg Time
         out.push_str(&format_avg_time_table(snapshots, "Write Path", WRITE_PATH));
@@ -377,7 +455,6 @@ pub mod stats {
             BALANCE_PATH,
         ));
         out.push_str(&format_avg_time_table(snapshots, "I/O", IO_PATH));
-        out.push_str(&format_avg_time_table(snapshots, "Lifecycle", LIFECYCLE));
 
         // Task Total Time
         out.push_str(&format_total_time_table(
@@ -391,7 +468,6 @@ pub mod stats {
             BALANCE_PATH,
         ));
         out.push_str(&format_total_time_table(snapshots, "I/O", IO_PATH));
-        out.push_str(&format_total_time_table(snapshots, "Lifecycle", LIFECYCLE));
 
         out
     }
@@ -425,7 +501,7 @@ pub mod stats {
 }
 
 #[cfg(feature = "stats")]
-pub use stats::{format_batch_tables, QuantizedSpannStats, StatsSnapshot};
+pub use stats::{format_batch_tables, ClusterSizeStats, QuantizedSpannStats, StatsSnapshot};
 
 // Blockfile prefixes
 const PREFIX_CENTER: &str = "center";
@@ -528,9 +604,6 @@ impl<I: VectorIndex> QuantizedSpannIndexWriter<I> {
     }
 
     pub fn remove(&self, id: u32) {
-        #[cfg(feature = "stats")]
-        let _guard = stats::TimedGuard::new(&self.stats.remove);
-
         self.upgrade_version(id);
     }
 
@@ -540,9 +613,6 @@ impl<I: VectorIndex> QuantizedSpannIndexWriter<I> {
         k: usize,
         query: &[f32],
     ) -> Result<SearchResult, QuantizedSpannError> {
-        #[cfg(feature = "stats")]
-        let _guard = stats::TimedGuard::new(&self.stats.search);
-
         use std::collections::HashSet;
 
         let rotated = self.rotate(query);
@@ -608,6 +678,15 @@ impl<I: VectorIndex> QuantizedSpannIndexWriter<I> {
     #[cfg(feature = "stats")]
     pub fn stats_arc(&self) -> Arc<stats::QuantizedSpannStats> {
         self.stats.clone()
+    }
+
+    /// Get current cluster sizes (only available with `stats` feature).
+    #[cfg(feature = "stats")]
+    pub fn cluster_sizes(&self) -> Vec<usize> {
+        self.cluster_deltas
+            .iter()
+            .map(|entry| entry.value().length)
+            .collect()
     }
 }
 
@@ -980,6 +1059,7 @@ impl<I: VectorIndex> QuantizedSpannIndexWriter<I> {
             .unwrap_or(default_write_rng_factor());
         let mut selected_centroids = Vec::<Arc<_>>::with_capacity(nreplica_count);
 
+        // println!(">>>>>>>>>>>>>>>>>> [RNG - CHECK]");
         for (cluster_id, distance) in candidates.keys.iter().zip(candidates.distances.iter()) {
             // Epsilon filter
             if (distance - first_distance).abs() > write_rng_epsilon * first_distance.abs() {
@@ -991,10 +1071,14 @@ impl<I: VectorIndex> QuantizedSpannIndexWriter<I> {
             };
 
             // RNG filter
-            if selected_centroids
-                .iter()
-                .any(|sel| write_rng_factor * self.distance(&center, sel).abs() <= distance.abs())
-            {
+            if selected_centroids.iter().any(|sel| {
+                let selected_dist = self.distance(&center, sel);
+                let blocked = write_rng_factor * selected_dist.abs() <= distance.abs();
+                // println!(
+                //     "[NEIGHBOUR CHECK] I: {cluster_id} Q: {distance}, S: {selected_dist}, B: {blocked}"
+                // );
+                blocked
+            }) {
                 continue;
             }
 
@@ -1006,6 +1090,8 @@ impl<I: VectorIndex> QuantizedSpannIndexWriter<I> {
                 break;
             }
         }
+
+        // println!("[RNG] {result:?} <<<<<<<<<<<<<<<");
 
         result
     }
@@ -1160,180 +1246,180 @@ impl<I: VectorIndex> QuantizedSpannIndexWriter<I> {
             self.drop(cluster_id)?;
         }
 
-        // NPA check for split points
-        let evaluated = DashSet::new();
+        // // NPA check for split points
+        // let evaluated = DashSet::new();
 
-        if left_cluster_id != cluster_id {
-            for (id, version, embedding) in &left_group {
-                if !self.is_valid(*id, *version) {
-                    continue;
-                }
-                if !evaluated.insert(*id) {
-                    continue;
-                }
-                let old_dist = self.distance(embedding, &old_center);
-                let new_dist = self.distance(embedding, &left_center);
-                if new_dist > old_dist {
-                    self.reassign(left_cluster_id, *id, *version, embedding.clone())
-                        .await?;
-                }
-            }
-        }
+        // if left_cluster_id != cluster_id {
+        //     for (id, version, embedding) in &left_group {
+        //         if !self.is_valid(*id, *version) {
+        //             continue;
+        //         }
+        //         if !evaluated.insert(*id) {
+        //             continue;
+        //         }
+        //         let old_dist = self.distance(embedding, &old_center);
+        //         let new_dist = self.distance(embedding, &left_center);
+        //         if new_dist > old_dist {
+        //             self.reassign(left_cluster_id, *id, *version, embedding.clone())
+        //                 .await?;
+        //         }
+        //     }
+        // }
 
-        if right_cluster_id != cluster_id {
-            for (id, version, embedding) in &right_group {
-                if !self.is_valid(*id, *version) {
-                    continue;
-                }
-                if !evaluated.insert(*id) {
-                    continue;
-                }
-                let old_dist = self.distance(embedding, &old_center);
-                let new_dist = self.distance(embedding, &right_center);
-                if new_dist > old_dist {
-                    self.reassign(right_cluster_id, *id, *version, embedding.clone())
-                        .await?;
-                }
-            }
-        }
+        // if right_cluster_id != cluster_id {
+        //     for (id, version, embedding) in &right_group {
+        //         if !self.is_valid(*id, *version) {
+        //             continue;
+        //         }
+        //         if !evaluated.insert(*id) {
+        //             continue;
+        //         }
+        //         let old_dist = self.distance(embedding, &old_center);
+        //         let new_dist = self.distance(embedding, &right_center);
+        //         if new_dist > old_dist {
+        //             self.reassign(right_cluster_id, *id, *version, embedding.clone())
+        //                 .await?;
+        //         }
+        //     }
+        // }
 
-        // NPA check for neighbor points
-        let mut reassign_candidates = Vec::new();
-        let old_q_norm = f32::dot(&old_center, &old_center).unwrap_or(0.0).sqrt() as f32;
-        let left_q_norm = if left_cluster_id == cluster_id {
-            old_q_norm
-        } else {
-            f32::dot(&left_center, &left_center).unwrap_or(0.0).sqrt() as f32
-        };
-        let right_q_norm = if right_cluster_id == cluster_id {
-            old_q_norm
-        } else {
-            f32::dot(&right_center, &right_center).unwrap_or(0.0).sqrt() as f32
-        };
+        // // NPA check for neighbor points
+        // let mut reassign_candidates = Vec::new();
+        // let old_q_norm = f32::dot(&old_center, &old_center).unwrap_or(0.0).sqrt() as f32;
+        // let left_q_norm = if left_cluster_id == cluster_id {
+        //     old_q_norm
+        // } else {
+        //     f32::dot(&left_center, &left_center).unwrap_or(0.0).sqrt() as f32
+        // };
+        // let right_q_norm = if right_cluster_id == cluster_id {
+        //     old_q_norm
+        // } else {
+        //     f32::dot(&right_center, &right_center).unwrap_or(0.0).sqrt() as f32
+        // };
 
-        let reassign_neighbor_count =
-            self.config
-                .reassign_neighbor_count
-                .unwrap_or(default_reassign_neighbor_count()) as usize;
-        let neighbors = self.navigate(&old_center, reassign_neighbor_count)?;
-        for neighbor_id in neighbors.keys {
-            if neighbor_id == cluster_id
-                || neighbor_id == left_cluster_id
-                || neighbor_id == right_cluster_id
-            {
-                continue;
-            }
-            self.scrub(neighbor_id).await?;
-            let Some(neighbor_delta) = self.cluster_deltas.get(&neighbor_id).map(|d| d.clone())
-            else {
-                continue;
-            };
+        // let reassign_neighbor_count =
+        //     self.config
+        //         .reassign_neighbor_count
+        //         .unwrap_or(default_reassign_neighbor_count()) as usize;
+        // let neighbors = self.navigate(&old_center, reassign_neighbor_count)?;
+        // for neighbor_id in neighbors.keys {
+        //     if neighbor_id == cluster_id
+        //         || neighbor_id == left_cluster_id
+        //         || neighbor_id == right_cluster_id
+        //     {
+        //         continue;
+        //     }
+        //     self.scrub(neighbor_id).await?;
+        //     let Some(neighbor_delta) = self.cluster_deltas.get(&neighbor_id).map(|d| d.clone())
+        //     else {
+        //         continue;
+        //     };
 
-            let c_norm = f32::dot(&neighbor_delta.center, &neighbor_delta.center)
-                .unwrap_or(0.0)
-                .sqrt() as f32;
+        //     let c_norm = f32::dot(&neighbor_delta.center, &neighbor_delta.center)
+        //         .unwrap_or(0.0)
+        //         .sqrt() as f32;
 
-            let old_r_q = old_center
-                .iter()
-                .zip(neighbor_delta.center.iter())
-                .map(|(a, b)| a - b)
-                .collect::<Vec<_>>();
-            let old_c_dot_q = f32::dot(&neighbor_delta.center, &old_center).unwrap_or(0.0) as f32;
+        //     let old_r_q = old_center
+        //         .iter()
+        //         .zip(neighbor_delta.center.iter())
+        //         .map(|(a, b)| a - b)
+        //         .collect::<Vec<_>>();
+        //     let old_c_dot_q = f32::dot(&neighbor_delta.center, &old_center).unwrap_or(0.0) as f32;
 
-            let (left_r_q, left_c_dot_q) = if left_cluster_id == cluster_id {
-                (old_r_q.clone(), old_c_dot_q)
-            } else {
-                let r_q = left_center
-                    .iter()
-                    .zip(neighbor_delta.center.iter())
-                    .map(|(a, b)| a - b)
-                    .collect::<Vec<_>>();
-                let c_dot_q = f32::dot(&neighbor_delta.center, &left_center).unwrap_or(0.0) as f32;
-                (r_q, c_dot_q)
-            };
+        //     let (left_r_q, left_c_dot_q) = if left_cluster_id == cluster_id {
+        //         (old_r_q.clone(), old_c_dot_q)
+        //     } else {
+        //         let r_q = left_center
+        //             .iter()
+        //             .zip(neighbor_delta.center.iter())
+        //             .map(|(a, b)| a - b)
+        //             .collect::<Vec<_>>();
+        //         let c_dot_q = f32::dot(&neighbor_delta.center, &left_center).unwrap_or(0.0) as f32;
+        //         (r_q, c_dot_q)
+        //     };
 
-            let (right_r_q, right_c_dot_q) = if right_cluster_id == cluster_id {
-                (old_r_q.clone(), old_c_dot_q)
-            } else {
-                let r_q = right_center
-                    .iter()
-                    .zip(neighbor_delta.center.iter())
-                    .map(|(a, b)| a - b)
-                    .collect::<Vec<_>>();
-                let c_dot_q = f32::dot(&neighbor_delta.center, &right_center).unwrap_or(0.0) as f32;
-                (r_q, c_dot_q)
-            };
+        //     let (right_r_q, right_c_dot_q) = if right_cluster_id == cluster_id {
+        //         (old_r_q.clone(), old_c_dot_q)
+        //     } else {
+        //         let r_q = right_center
+        //             .iter()
+        //             .zip(neighbor_delta.center.iter())
+        //             .map(|(a, b)| a - b)
+        //             .collect::<Vec<_>>();
+        //         let c_dot_q = f32::dot(&neighbor_delta.center, &right_center).unwrap_or(0.0) as f32;
+        //         (r_q, c_dot_q)
+        //     };
 
-            let neighbor_r_q = vec![0.0; neighbor_delta.center.len()];
-            let neighbor_c_dot_q = c_norm * c_norm;
-            let neighbor_q_norm = c_norm;
+        //     let neighbor_r_q = vec![0.0; neighbor_delta.center.len()];
+        //     let neighbor_c_dot_q = c_norm * c_norm;
+        //     let neighbor_q_norm = c_norm;
 
-            for (i, code) in neighbor_delta.codes.iter().enumerate() {
-                let id = neighbor_delta.ids[i];
-                let version = neighbor_delta.versions[i];
+        //     for (i, code) in neighbor_delta.codes.iter().enumerate() {
+        //         let id = neighbor_delta.ids[i];
+        //         let version = neighbor_delta.versions[i];
 
-                if !self.is_valid(id, version) {
-                    continue;
-                }
-                if !evaluated.insert(id) {
-                    continue;
-                }
+        //         if !self.is_valid(id, version) {
+        //             continue;
+        //         }
+        //         if !evaluated.insert(id) {
+        //             continue;
+        //         }
 
-                let code = Code::<&[u8]>::new(code.as_ref());
+        //         let code = Code::<&[u8]>::new(code.as_ref());
 
-                let neighbor_dist = code.distance_query(
-                    &self.distance_function,
-                    &neighbor_r_q,
-                    c_norm,
-                    neighbor_c_dot_q,
-                    neighbor_q_norm,
-                );
-                let left_dist = code.distance_query(
-                    &self.distance_function,
-                    &left_r_q,
-                    c_norm,
-                    left_c_dot_q,
-                    left_q_norm,
-                );
-                let right_dist = code.distance_query(
-                    &self.distance_function,
-                    &right_r_q,
-                    c_norm,
-                    right_c_dot_q,
-                    right_q_norm,
-                );
-                let old_dist = code.distance_query(
-                    &self.distance_function,
-                    &old_r_q,
-                    c_norm,
-                    old_c_dot_q,
-                    old_q_norm,
-                );
+        //         let neighbor_dist = code.distance_query(
+        //             &self.distance_function,
+        //             &neighbor_r_q,
+        //             c_norm,
+        //             neighbor_c_dot_q,
+        //             neighbor_q_norm,
+        //         );
+        //         let left_dist = code.distance_query(
+        //             &self.distance_function,
+        //             &left_r_q,
+        //             c_norm,
+        //             left_c_dot_q,
+        //             left_q_norm,
+        //         );
+        //         let right_dist = code.distance_query(
+        //             &self.distance_function,
+        //             &right_r_q,
+        //             c_norm,
+        //             right_c_dot_q,
+        //             right_q_norm,
+        //         );
+        //         let old_dist = code.distance_query(
+        //             &self.distance_function,
+        //             &old_r_q,
+        //             c_norm,
+        //             old_c_dot_q,
+        //             old_q_norm,
+        //         );
 
-                if neighbor_dist <= left_dist && neighbor_dist <= right_dist {
-                    continue;
-                }
-                if old_dist <= left_dist && old_dist <= right_dist {
-                    continue;
-                }
+        //         if neighbor_dist <= left_dist && neighbor_dist <= right_dist {
+        //             continue;
+        //         }
+        //         if old_dist <= left_dist && old_dist <= right_dist {
+        //             continue;
+        //         }
 
-                reassign_candidates.push((neighbor_id, id, version));
-            }
-        }
+        //         reassign_candidates.push((neighbor_id, id, version));
+        //     }
+        // }
 
-        let candidate_ids = reassign_candidates
-            .iter()
-            .map(|(_, id, _)| *id)
-            .collect::<Vec<_>>();
-        self.load_raw(&candidate_ids).await?;
+        // let candidate_ids = reassign_candidates
+        //     .iter()
+        //     .map(|(_, id, _)| *id)
+        //     .collect::<Vec<_>>();
+        // self.load_raw(&candidate_ids).await?;
 
-        for (from_cluster_id, id, version) in reassign_candidates {
-            let Some(embedding) = self.embeddings.get(&id).map(|e| e.clone()) else {
-                continue;
-            };
-            self.reassign(from_cluster_id, id, version, embedding)
-                .await?;
-        }
+        // for (from_cluster_id, id, version) in reassign_candidates {
+        //     let Some(embedding) = self.embeddings.get(&id).map(|e| e.clone()) else {
+        //         continue;
+        //     };
+        //     self.reassign(from_cluster_id, id, version, embedding)
+        //         .await?;
+        // }
 
         Ok(())
     }
@@ -1356,11 +1442,6 @@ impl QuantizedSpannIndexWriter<USearchIndex> {
         blockfile_provider: &BlockfileProvider,
         usearch_provider: &USearchIndexProvider,
     ) -> Result<QuantizedSpannFlusher, QuantizedSpannError> {
-        #[cfg(feature = "stats")]
-        let stats_clone = self.stats.clone();
-        #[cfg(feature = "stats")]
-        let _guard = stats::TimedGuard::new(&stats_clone.commit);
-
         // === Step 0: Pre-scrub cleanup ===
         let mut mutated_cluster_ids = self
             .cluster_deltas
@@ -1831,9 +1912,6 @@ impl QuantizedSpannIndexWriter<USearchIndex> {
         &mut self,
         usearch_provider: &USearchIndexProvider,
     ) -> Result<(), QuantizedSpannError> {
-        #[cfg(feature = "stats")]
-        let _guard = stats::TimedGuard::new(&self.stats.rebuild_on_drift);
-
         // Compute new center by averaging all cluster centroids
         let dim = self.center.len();
         let mut new_center = vec![0.0f32; dim];

@@ -32,7 +32,7 @@ const BLOCK_SIZE_BYTES: usize = 3 * 1024 * 1024; // 32MB
 const BATCH_SIZE: usize = 100_000;
 const NUM_BATCHES: usize = 10;
 const NUM_THREADS: usize = 16;
-const DISTANCE_FUNCTION: DistanceFunction = DistanceFunction::Cosine;
+const DISTANCE_FUNCTION: DistanceFunction = DistanceFunction::Euclidean;
 
 // =============================================================================
 // SPANN Configuration
@@ -336,7 +336,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Capture stats snapshot before commit consumes the index
         #[cfg(feature = "stats")]
         {
-            batch_snapshots.push(index.stats().snapshot());
+            let cluster_sizes = index.cluster_sizes();
+            batch_snapshots.push(index.stats().snapshot(&cluster_sizes));
         }
 
         let flusher = index

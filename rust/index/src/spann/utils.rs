@@ -729,27 +729,27 @@ pub fn split(embeddings: Vec<EmbeddingPoint>, distance_function: &DistanceFuncti
     }
 
     // Find nearest actual vectors as centers
-    let mut nearest_0_idx = 0;
-    let mut nearest_0_dist = f32::MAX;
-    let mut nearest_1_idx = 0;
-    let mut nearest_1_dist = f32::MAX;
+    // let mut nearest_0_idx = 0;
+    // let mut nearest_0_dist = f32::MAX;
+    // let mut nearest_1_idx = 0;
+    // let mut nearest_1_dist = f32::MAX;
 
-    for (i, (_, _, e)) in embeddings.iter().enumerate() {
-        let dist_0 = distance_function.distance(e, &c_0);
-        let dist_1 = distance_function.distance(e, &c_1);
+    // for (i, (_, _, e)) in embeddings.iter().enumerate() {
+    //     let dist_0 = distance_function.distance(e, &c_0);
+    //     let dist_1 = distance_function.distance(e, &c_1);
 
-        if !labels[i] && dist_0 < nearest_0_dist {
-            nearest_0_dist = dist_0;
-            nearest_0_idx = i;
-        }
-        if labels[i] && dist_1 < nearest_1_dist {
-            nearest_1_dist = dist_1;
-            nearest_1_idx = i;
-        }
-    }
+    //     if !labels[i] && dist_0 < nearest_0_dist {
+    //         nearest_0_dist = dist_0;
+    //         nearest_0_idx = i;
+    //     }
+    //     if labels[i] && dist_1 < nearest_1_dist {
+    //         nearest_1_dist = dist_1;
+    //         nearest_1_idx = i;
+    //     }
+    // }
 
-    let left_center = embeddings[nearest_0_idx].2.clone();
-    let right_center = embeddings[nearest_1_idx].2.clone();
+    let left_center = c_0.into();
+    let right_center = c_1.into();
 
     // Build output groups
     let count_0 = labels.iter().filter(|&&l| !l).count();
@@ -767,6 +767,84 @@ pub fn split(embeddings: Vec<EmbeddingPoint>, distance_function: &DistanceFuncti
     }
 
     (left_center, group_0, right_center, group_1)
+}
+
+/// Split a set of embeddings into two groups using the general KMeans algorithm with k=2.
+///
+/// This is an alternative to `split()` that uses the more sophisticated `cluster()` implementation
+/// with lambda-based balancing.
+///
+/// Returns (left_center, left_group, right_center, right_group) where centers
+/// are from the KMeans output.
+pub fn split_with_kmeans(
+    embeddings: Vec<EmbeddingPoint>,
+    distance_function: &DistanceFunction,
+) -> SplitResult {
+    let n = embeddings.len();
+
+    // Handle edge cases
+    if n < 2 {
+        let c = embeddings
+            .first()
+            .map(|(_, _, e)| e.clone())
+            .unwrap_or_else(|| Arc::from(vec![]));
+        return (c.clone(), embeddings, c, Vec::new());
+    }
+
+    let dim = embeddings[0].2.len();
+
+    // Extract Arc<[f32]> embeddings for KMeansAlgorithmInput
+    let embedding_arcs: Vec<Arc<[f32]>> = embeddings.iter().map(|(_, _, e)| e.clone()).collect();
+
+    // Create KMeansAlgorithmInput
+    let indices: Vec<usize> = (0..n).collect();
+    let mut kmeans_input = KMeansAlgorithmInput::new(
+        indices,
+        &embedding_arcs,
+        dim,
+        2, // k = 2 clusters
+        0, // first
+        n, // last
+        n, // num_samples = all points
+        distance_function.clone(),
+        1.0, // initial_lambda (default)
+    );
+
+    // Run clustering
+    let output = match cluster(&mut kmeans_input) {
+        Ok(output) => output,
+        Err(_) => {
+            // Fallback: return all in one group
+            let c = embeddings[0].2.clone();
+            return (c.clone(), embeddings, c, Vec::new());
+        }
+    };
+
+    // Map results back to SplitResult format
+    let left_center = output
+        .cluster_centers
+        .first()
+        .cloned()
+        .unwrap_or_else(|| Arc::from(vec![0.0; dim]));
+    let right_center = output
+        .cluster_centers
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| Arc::from(vec![0.0; dim]));
+
+    let mut left_group = Vec::new();
+    let mut right_group = Vec::new();
+
+    for (idx, embedding_point) in embeddings.into_iter().enumerate() {
+        let label = output.cluster_labels.get(&idx).copied().unwrap_or(0);
+        if label == 0 {
+            left_group.push(embedding_point);
+        } else {
+            right_group.push(embedding_point);
+        }
+    }
+
+    (left_center, left_group, right_center, right_group)
 }
 
 /// Query a quantized cluster, returning all points with estimated distance.
